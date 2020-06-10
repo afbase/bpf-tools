@@ -10,31 +10,6 @@ use std::{mem, thread, time};
 //
 // Based on: https://github.com/iovisor/bcc/blob/master/tools/runqlat.py
 
-#[cfg(any(
-    feature = "v0_4_0",
-    feature = "v0_5_0",
-))]
-fn attach_events(bpf: &mut BPF) {
-    let trace_run = bpf.load_kprobe("trace_run").unwrap();
-    let trace_ttwu_do_wakeup = bpf.load_kprobe("trace_ttwu_do_wakeup").unwrap();
-    let trace_wake_up_new_task = bpf.load_kprobe("trace_wake_up_new_task").unwrap();
-
-    bpf.attach_kprobe("finish_task_switch", trace_run).unwrap();
-    bpf.attach_kprobe("wake_up_new_task", trace_wake_up_new_task).unwrap();
-    bpf.attach_kprobe("ttwu_do_wakeup", trace_ttwu_do_wakeup).unwrap();
-}
-
-#[cfg(any(
-    feature = "v0_6_0",
-    feature = "v0_6_1",
-    feature = "v0_7_0",
-    feature = "v0_8_0",
-    feature = "v0_9_0",
-    feature = "v0_10_0",
-    feature = "v0_11_0",
-    feature = "v0_12_0",
-    not(feature = "specific"),
-))]
 fn attach_events(bpf: &mut BPF) {
     if bpf.support_raw_tracepoint() {
         let raw_tp_sched_wakeup = bpf.load_raw_tracepoint("raw_tp__sched_wakeup").unwrap();
@@ -84,7 +59,7 @@ fn do_main(runnable: Arc<AtomicBool>) -> Result<(), Error> {
         .value_of("windows")
         .map(|v| v.parse().expect("Invalid argument for windows"));
 
-    let code = if cfg!(any(feature = "v0_4_0", feature = "v0_5_0")) {
+    let code = if cfg!(any(feature = "bcc_v0_4_0", feature = "bcc_v0_5_0")) {
         include_str!("bpf.c").replace("#define FEATURE_SUPPORT_RAW_TP", "")
     } else {
         include_str!("bpf.c").to_string()
