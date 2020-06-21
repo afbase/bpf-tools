@@ -36,69 +36,68 @@ struct ipv6_data_t {
     task: [u8; 16], // TASK_COMM_LEN
 }
 
-trait IpDataParse<Output> {
-    fn parse_data_t_struct(x: &[u8]) -> Output;
-}
-
-impl IpDataParse<ipv4_data_t> for ipv4_data_t {
-    fn parse_data_t_struct(x: &[u8]) -> ipv4_data_t {
-        unsafe { ptr::read(x.as_ptr() as *const ipv4_data_t) }
-    }
-}
-
-impl IpDataParse<ipv6_data_t> for ipv6_data_t {
-    fn parse_data_t_struct(x: &[u8]) -> ipv6_data_t {
-        unsafe { ptr::read(x.as_ptr() as *const ipv6_data_t) }
-    }
-}
-
-fn perf_ipv4_data_t_callback() -> Box<dyn FnMut(&[u8]) + Send> {
-    Box::new(|x| {
-        // This callback
-        let data: ipv4_data_t = ipv4_data_t::parse_data_t_struct(x);
-        if let Ok(task) = str::from_utf8(&data.task) {
-            println!(
-                "{: <6} {: <6} {: <16} {: <16} {: <16} {: <16} {: <4}", // "UID", "PID", "COMM", "IP", "SADDR", "DADDR", "DPORT"
-                data.uid,
-                data.pid,
-                task.trim_end_matches('\0'),
-                data.ip,
-                Ipv4Addr::from(htonl(data.saddr)).to_string(),
-                Ipv4Addr::from(htonl(data.daddr)).to_string(),
-                data.dport
-            );
-        }
-    })
-}
-
-fn perf_ipv6_data_t_callback() -> Box<dyn FnMut(&[u8]) + Send> {
-    Box::new(|x| {
-        // This callback
-        let data: ipv6_data_t = ipv6_data_t::parse_data_t_struct(x);
-        // .swap_bytes() always swap bytes, .to_be_bytes() swap if host is le, .to_le_bytes() swaps if host is be
-        let saddr: u128 = u128::from_le_bytes(data.saddr.to_be_bytes());
-        let daddr: u128 = u128::from_le_bytes(data.daddr.to_be_bytes());
-        if let Ok(task) = str::from_utf8(&data.task) {
-            println!(
-                "{: <6} {: <6} {: <16} {: <16} {: <16} {: <16} {: <4}", // "UID", "PID", "COMM", "IP", "SADDR", "DADDR", "DPORT"
-                data.uid,
-                data.pid,
-                task.trim_end_matches('\0'),
-                data.ip,
-                Ipv6Addr::from(saddr).to_string(),
-                Ipv6Addr::from(daddr).to_string(),
-                data.dport
-            );
-        }
-    })
-}
-
 fn ntohs(u: u16) -> u16 {
     u16::from_be(u)
 }
 fn htonl(u: u32) -> u32 {
     u.to_be()
 }
+
+trait IpDataParse<IpType> {
+    fn parse_data_t_struct(x: &[u8]) -> IpType;
+    fn perf_callback() -> Box<dyn FnMut(&[u8]) + Send>;
+}
+
+trait IpAddrStr<IpUintType> {
+    fn pretty_print_ip(ip: IpUintType) -> String;
+}
+
+impl IpAddrStr<u32> for u32{
+    fn pretty_print_ip(ip: u32) -> String {
+        Ipv4Addr::from(htonl(ip)).to_string()
+    }
+}
+
+impl IpAddrStr<u128> for u128{
+    fn pretty_print_ip(ip: u128) -> String {
+        let addr: u128 = u128::from_le_bytes(ip.to_be_bytes());
+        Ipv6Addr::from(addr).to_string()
+    }
+}
+
+macro_rules! IpDataParse_rule {
+    (
+    $generics_type:ty,
+    $ip_uint_type:ty
+    ) => {
+        impl IpDataParse<$generics_type> for $generics_type {
+            fn parse_data_t_struct(x: &[u8]) -> $generics_type {
+                unsafe { ptr::read(x.as_ptr() as *const $generics_type) }
+            }
+            fn perf_callback() -> Box<dyn FnMut(&[u8]) + Send> {
+                Box::new(|x| {
+                    // This callback
+                    let data: $generics_type = <$generics_type>::parse_data_t_struct(x);
+                    if let Ok(task) = str::from_utf8(&data.task) {
+                        println!(
+                            "{: <6} {: <6} {: <16} {: <16} {: <16} {: <16} {: <4}", // "UID", "PID", "COMM", "IP", "SADDR", "DADDR", "DPORT"
+                            data.uid,
+                            data.pid,
+                            task.trim_end_matches('\0'),
+                            data.ip,
+                            <$ip_uint_type>::pretty_print_ip(data.saddr),
+                            <$ip_uint_type>::pretty_print_ip(data.daddr),
+                            data.dport
+                        );
+                    }
+                })
+            }
+        }
+    };
+}
+
+IpDataParse_rule!(ipv4_data_t, u32);
+IpDataParse_rule!(ipv6_data_t, u128);
 
 fn do_main(runnable: Arc<AtomicBool>) -> Result<(), Error> {
     let mut bpf_text: String = include_str!("bpf.c").to_string();
@@ -201,8 +200,8 @@ fn do_main(runnable: Arc<AtomicBool>) -> Result<(), Error> {
     println!("Tracing connect ... Hit Ctrl-C to end");
     let ipv4_table = module.table("ipv4_events");
     let ipv6_table = module.table("ipv6_events");
-    let _ipv4_perf_map = module.init_perf_map(ipv4_table, perf_ipv4_data_t_callback)?;
-    let _ipv6_perf_map = module.init_perf_map(ipv6_table, perf_ipv6_data_t_callback)?;
+    let _ipv4_perf_map = module.init_perf_map(ipv4_table, ipv4_data_t::perf_callback)?;
+    let _ipv6_perf_map = module.init_perf_map(ipv6_table, ipv6_data_t::perf_callback)?;
     // print a header
     println!(
         "{: <6} {: <6} {: <16} {: <16} {: <16} {: <16} {: <4}",
